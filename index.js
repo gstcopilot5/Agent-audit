@@ -97,6 +97,25 @@ fastify.get('/authorizations', async (request, reply) => {
   return authorizations
 })
 
+fastify.get('/verify', async (request, reply) => {
+  if (logs.length === 0) {
+    return { status: 'valid', message: 'No logs to verify', entries: 0 }
+  }
+  for (let i = 0; i < logs.length; i++) {
+    const { agent_name, action, input, output, timestamp, prev_hash, hash } = logs[i]
+    const expectedPrevHash = i === 0 ? '0'.repeat(64) : logs[i - 1].hash
+    if (prev_hash !== expectedPrevHash) {
+      return reply.status(200).send({ status: 'compromised', at_index: i, reason: 'prev_hash mismatch' })
+    }
+    const payload = JSON.stringify({ agent_name, action, input, output, timestamp, prev_hash })
+    const expectedHash = createHash('sha256').update(payload).digest('hex')
+    if (hash !== expectedHash) {
+      return reply.status(200).send({ status: 'compromised', at_index: i, reason: 'hash mismatch' })
+    }
+  }
+  return { status: 'valid', entries: logs.length }
+})
+
 fastify.post('/log', async (request, reply) => {
   const { agent_name, action, input, output } = request.body
   const authorized = authorizations.some(a => a.agent_name === agent_name)
