@@ -10,6 +10,10 @@ fastify.get('/health', async (request, reply) => {
   return { status: 'ok' }
 })
 
+fastify.get('/logs', async (request, reply) => {
+  return logs
+})
+
 fastify.post('/log', async (request, reply) => {
   const { agent_name, action, input, output } = request.body
   const entry = {
