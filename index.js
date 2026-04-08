@@ -1,18 +1,54 @@
 const fastify = require('fastify')({ logger: true })
-const { createHash } = require('crypto')
+const { createHash, randomBytes } = require('crypto')
 
-const API_KEY = process.env.API_KEY || 'dev-key-change-me'
+const ADMIN_KEY = process.env.API_KEY || 'dev-key-change-me'
+
+const PLANS = {
+  free:       { label: 'Free',       price: '$0/mo',     limit: 500 },
+  pro:        { label: 'Pro',        price: '$29/mo',    limit: 10000 },
+  enterprise: { label: 'Enterprise', price: 'Custom',    limit: Infinity },
+}
+
+// apiKeys store: key -> { user, plan, created_at, usage_count }
+const apiKeys = new Map()
 
 const logs = []
 const authorizations = []
 
-// Global API key guard — all routes except /dashboard
+const PUBLIC_ROUTES = ['/', '/dashboard', '/apikey', '/plans']
+
+// Global auth hook
 fastify.addHook('onRequest', async (request, reply) => {
-  if (request.url === '/' || request.url === '/dashboard') return
+  const url = request.url.split('?')[0]
+  if (PUBLIC_ROUTES.includes(url)) return
+
   const key = request.headers['x-api-key']
-  if (!key || key !== API_KEY) {
-    return reply.status(401).send({ error: 'Unauthorized', message: 'Missing or invalid x-api-key header' })
+  if (!key) {
+    return reply.status(401).send({ error: 'Unauthorized', message: 'Missing x-api-key header' })
   }
+
+  // Admin key — full access, no usage tracking
+  if (key === ADMIN_KEY) return
+
+  // User-generated key
+  const record = apiKeys.get(key)
+  if (!record) {
+    return reply.status(401).send({ error: 'Unauthorized', message: 'Invalid API key' })
+  }
+
+  const plan = PLANS[record.plan]
+  if (record.usage_count >= plan.limit) {
+    return reply.status(429).send({
+      error: 'Too Many Requests',
+      message: `${plan.label} plan limit of ${plan.limit} requests reached. Upgrade to continue.`,
+      plan: record.plan,
+      usage: record.usage_count,
+      limit: plan.limit,
+    })
+  }
+
+  record.usage_count++
+  request.apiKeyRecord = record
 })
 
 fastify.get('/', async (request, reply) => {
@@ -193,6 +229,50 @@ fastify.get('/dashboard', async (request, reply) => {
 </html>`
 })
 
+fastify.post('/apikey', async (request, reply) => {
+  const { user, plan = 'free' } = request.body ?? {}
+  if (!user) {
+    return reply.status(400).send({ error: 'Bad Request', message: '"user" is required' })
+  }
+  if (!PLANS[plan]) {
+    return reply.status(400).send({ error: 'Bad Request', message: `Invalid plan. Choose: ${Object.keys(PLANS).join(', ')}` })
+  }
+  const key = 'aa_' + randomBytes(24).toString('hex')
+  const record = { user, plan, created_at: new Date().toISOString(), usage_count: 0 }
+  apiKeys.set(key, record)
+  return reply.status(201).send({
+    key,
+    user,
+    plan,
+    limit: PLANS[plan].limit,
+    price: PLANS[plan].price,
+    created_at: record.created_at,
+  })
+})
+
+// Admin-only: list all keys with usage stats
+fastify.get('/apikeys', async (request, reply) => {
+  const result = []
+  for (const [key, record] of apiKeys) {
+    const plan = PLANS[record.plan]
+    result.push({
+      key,
+      user: record.user,
+      plan: record.plan,
+      price: plan.price,
+      usage_count: record.usage_count,
+      limit: plan.limit,
+      usage_pct: plan.limit === Infinity ? null : Math.round((record.usage_count / plan.limit) * 100),
+      created_at: record.created_at,
+    })
+  }
+  return result
+})
+
+fastify.get('/plans', async (request, reply) => {
+  return Object.entries(PLANS).map(([id, p]) => ({ id, ...p }))
+})
+
 fastify.get('/agent/:name', async (request, reply) => {
   const { name } = request.params
   const agentAuthorizations = authorizations.filter(a => a.agent_name === name)
@@ -267,5 +347,5 @@ fastify.listen({ port: Number(process.env.PORT), host: '0.0.0.0' }, (err) => {
     fastify.log.error(err)
     process.exit(1)
   }
-  fastify.log.info(`API key: ${API_KEY}`)
+  fastify.log.info(`Admin key: ${ADMIN_KEY}`)
 })
