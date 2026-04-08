@@ -1,26 +1,38 @@
 const fastify = require('fastify')({ logger: true })
-const { createHash, randomBytes } = require('crypto')
+const { createHash, randomBytes, createHmac } = require('crypto')
+const Razorpay = require('razorpay')
 
 const ADMIN_KEY = process.env.API_KEY || 'dev-key-change-me'
 
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+})
+
 const PLANS = {
-  free:       { label: 'Free',       price: '$0/mo',     limit: 500 },
-  pro:        { label: 'Pro',        price: '$29/mo',    limit: 10000 },
-  enterprise: { label: 'Enterprise', price: 'Custom',    limit: Infinity },
+  free:       { label: 'Free',       price: '$0/mo',   limit: 500,      amount_inr: 0 },
+  pro:        { label: 'Pro',        price: '$29/mo',  limit: 10000,    amount_inr: 2400 * 100 },
+  enterprise: { label: 'Enterprise', price: 'Custom',  limit: Infinity, amount_inr: null },
 }
 
-// apiKeys store: key -> { user, plan, created_at, usage_count }
+// apiKeys store: key -> { user, plan, created_at, usage_count, paid_order_id }
 const apiKeys = new Map()
 
 const logs = []
 const authorizations = []
 
-const PUBLIC_ROUTES = ['/', '/dashboard', '/apikey', '/plans']
+// Pending orders: razorpay_order_id -> { api_key, target_plan }
+const pendingOrders = new Map()
+
+const PUBLIC_ROUTES = ['/', '/dashboard', '/apikey', '/plans', '/payment/webhook']
 
 // Global auth hook
 fastify.addHook('onRequest', async (request, reply) => {
   const url = request.url.split('?')[0]
   if (PUBLIC_ROUTES.includes(url)) return
+
+  // Payment create route is also public (needs api_key in body, not header)
+  if (url === '/payment/create') return
 
   const key = request.headers['x-api-key']
   if (!key) {
@@ -70,8 +82,10 @@ fastify.get('/', async (request, reply) => {
     h1 { font-size: 2.6rem; font-weight: 700; letter-spacing: -0.03em; color: #fff; margin-bottom: 1rem; }
     h1 span { color: #7dd3fc; }
     .tagline { font-size: 1.1rem; color: #aaa; max-width: 540px; margin-bottom: 2rem; }
-    .cta { display: inline-block; background: #1d4ed8; color: #fff; padding: 0.6rem 1.4rem; border-radius: 6px; font-weight: 600; font-size: 0.95rem; }
+    .cta { display: inline-block; background: #1d4ed8; color: #fff; padding: 0.6rem 1.4rem; border-radius: 6px; font-weight: 600; font-size: 0.95rem; margin-right: 0.75rem; }
     .cta:hover { background: #2563eb; text-decoration: none; }
+    .cta-outline { display: inline-block; border: 1px solid #333; color: #aaa; padding: 0.6rem 1.4rem; border-radius: 6px; font-weight: 600; font-size: 0.95rem; }
+    .cta-outline:hover { border-color: #555; color: #fff; text-decoration: none; }
 
     section { max-width: 860px; margin: 0 auto; padding: 1.5rem 2rem; }
     h2 { font-size: 1rem; font-weight: 600; color: #7dd3fc; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 1.25rem; }
@@ -101,10 +115,11 @@ fastify.get('/', async (request, reply) => {
 </head>
 <body>
   <header>
-    <div class="badge">v0.0.0</div>
+    <div class="badge">v1.0.0</div>
     <h1>Agent<span>Audit</span></h1>
     <p class="tagline">A lightweight API for auditing AI agent activity — authorization records, tamper-proof logs, and hash chain integrity verification.</p>
     <a class="cta" href="/dashboard">View Dashboard</a>
+    <a class="cta-outline" href="/plans">View Plans &amp; Pricing</a>
   </header>
 
   <section>
@@ -114,6 +129,8 @@ fastify.get('/', async (request, reply) => {
       <div class="feature"><strong>Tamper-Proof Logs</strong><p>Every log entry is SHA-256 hashed and chained to the previous entry.</p></div>
       <div class="feature"><strong>Chain Verification</strong><p>Validate the entire log chain in one request to detect any tampering.</p></div>
       <div class="feature"><strong>JSON Export</strong><p>Download all logs and authorizations as a timestamped JSON file.</p></div>
+      <div class="feature"><strong>API Key Management</strong><p>Create per-user API keys with plan-based rate limits.</p></div>
+      <div class="feature"><strong>Plan Upgrades</strong><p>Upgrade to Pro via Razorpay — instant activation after payment.</p></div>
     </div>
   </section>
 
@@ -127,7 +144,10 @@ fastify.get('/', async (request, reply) => {
       <div class="endpoint"><span class="method get">GET</span><span class="path">/agent/:name</span><span class="desc">Full history for a specific agent</span></div>
       <div class="endpoint"><span class="method get">GET</span><span class="path">/verify</span><span class="desc">Validate hash chain integrity</span></div>
       <div class="endpoint"><span class="method get">GET</span><span class="path">/export</span><span class="desc">Download all data as JSON</span></div>
+      <div class="endpoint"><span class="method post">POST</span><span class="path">/payment/create</span><span class="desc">Create a Razorpay order to upgrade plan</span></div>
+      <div class="endpoint"><span class="method post">POST</span><span class="path">/payment/webhook</span><span class="desc">Razorpay webhook — auto-upgrades plan on payment</span></div>
       <div class="endpoint"><span class="method get">GET</span><span class="path">/dashboard</span><span class="desc">Browser UI for viewing logs</span></div>
+      <div class="endpoint"><span class="method get">GET</span><span class="path">/plans</span><span class="desc">View plans &amp; upgrade via Razorpay</span></div>
     </div>
   </section>
 
@@ -136,37 +156,39 @@ fastify.get('/', async (request, reply) => {
     <div class="examples">
       <div class="example">
         <h3># 1. Authorize an agent</h3>
-        <pre><span class="k">curl</span> -X POST http://localhost:3000/authorize \
-  -H <span class="s">"x-api-key: your-key"</span> \
-  -H <span class="s">"Content-Type: application/json"</span> \
+        <pre><span class="k">curl</span> -X POST /authorize \\
+  -H <span class="s">"x-api-key: your-key"</span> \\
+  -H <span class="s">"Content-Type: application/json"</span> \\
   -d <span class="s">'{"agent_name":"gpt-4","authorized_by":"alice","permissions":["read","write"]}'</span></pre>
       </div>
       <div class="example">
         <h3># 2. Log an agent action</h3>
-        <pre><span class="k">curl</span> -X POST http://localhost:3000/log \
-  -H <span class="s">"x-api-key: your-key"</span> \
-  -H <span class="s">"Content-Type: application/json"</span> \
+        <pre><span class="k">curl</span> -X POST /log \\
+  -H <span class="s">"x-api-key: your-key"</span> \\
+  -H <span class="s">"Content-Type: application/json"</span> \\
   -d <span class="s">'{"agent_name":"gpt-4","action":"summarize","input":"...","output":"..."}'</span></pre>
       </div>
       <div class="example">
         <h3># 3. Verify chain integrity</h3>
-        <pre><span class="k">curl</span> -H <span class="s">"x-api-key: your-key"</span> http://localhost:3000/verify
+        <pre><span class="k">curl</span> -H <span class="s">"x-api-key: your-key"</span> /verify
 <span class="c">{"status":"valid","entries":12}</span></pre>
       </div>
       <div class="example">
-        <h3># 4. Get full agent history</h3>
-        <pre><span class="k">curl</span> -H <span class="s">"x-api-key: your-key"</span> http://localhost:3000/agent/gpt-4</pre>
+        <h3># 4. Create payment order to upgrade to Pro</h3>
+        <pre><span class="k">curl</span> -X POST /payment/create \\
+  -H <span class="s">"Content-Type: application/json"</span> \\
+  -d <span class="s">'{"api_key":"aa_...","plan":"pro"}'</span></pre>
       </div>
     </div>
   </section>
 
-  <footer>All API endpoints require an <code>x-api-key</code> header. Set your key via the <code>API_KEY</code> environment variable.</footer>
+  <footer>All API endpoints require an <code>x-api-key</code> header. Set your admin key via the <code>API_KEY</code> environment variable.</footer>
 </body>
 </html>`
 })
 
 fastify.get('/health', async (request, reply) => {
-  return { status: 'ok' }
+  return { status: 'ok', razorpay_configured: !!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) }
 })
 
 fastify.get('/logs', async (request, reply) => {
@@ -207,7 +229,7 @@ fastify.get('/dashboard', async (request, reply) => {
     </tbody>
   </table>
   <script>
-    const API_KEY = '${API_KEY}'
+    const API_KEY = '${ADMIN_KEY}'
     async function load() {
       const res = await fetch('/logs', { headers: { 'x-api-key': API_KEY } })
       const logs = await res.json()
@@ -229,6 +251,199 @@ fastify.get('/dashboard', async (request, reply) => {
 </html>`
 })
 
+fastify.get('/plans', async (request, reply) => {
+  reply.type('text/html')
+  const rzpKeyId = process.env.RAZORPAY_KEY_ID || ''
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentAudit Plans</title>
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f0f; color: #e8e8e8; line-height: 1.6; }
+    a { color: #7dd3fc; text-decoration: none; }
+    header { padding: 3rem 2rem 2rem; max-width: 860px; margin: 0 auto; }
+    h1 { font-size: 2rem; font-weight: 700; color: #fff; margin-bottom: 0.5rem; }
+    h1 span { color: #7dd3fc; }
+    .subtitle { color: #888; font-size: 1rem; margin-bottom: 2rem; }
+    .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.5rem; max-width: 860px; margin: 0 auto 3rem; padding: 0 2rem; }
+    .plan { background: #161616; border: 1px solid #222; border-radius: 12px; padding: 2rem; position: relative; }
+    .plan.featured { border-color: #1d4ed8; background: #0d1a35; }
+    .plan-badge { position: absolute; top: -0.6rem; left: 50%; transform: translateX(-50%); background: #1d4ed8; color: #fff; font-size: 0.72rem; font-weight: 700; padding: 0.2rem 0.9rem; border-radius: 999px; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; }
+    .plan-name { font-size: 1.1rem; font-weight: 700; color: #fff; margin-bottom: 0.35rem; }
+    .plan-price { font-size: 2rem; font-weight: 800; color: #fff; margin-bottom: 0.15rem; }
+    .plan-price span { font-size: 1rem; font-weight: 400; color: #888; }
+    .plan-limit { font-size: 0.85rem; color: #888; margin-bottom: 1.5rem; }
+    .plan-limit strong { color: #e2e8f0; }
+    .plan-features { list-style: none; margin-bottom: 1.75rem; display: flex; flex-direction: column; gap: 0.5rem; }
+    .plan-features li { font-size: 0.88rem; color: #aaa; display: flex; gap: 0.5rem; }
+    .plan-features li::before { content: '✓'; color: #4ade80; font-weight: 700; flex-shrink: 0; }
+    .btn { display: block; text-align: center; padding: 0.65rem 1.25rem; border-radius: 7px; font-size: 0.95rem; font-weight: 600; cursor: pointer; border: none; width: 100%; }
+    .btn-primary { background: #1d4ed8; color: #fff; }
+    .btn-primary:hover { background: #2563eb; }
+    .btn-outline { background: transparent; border: 1px solid #333; color: #aaa; }
+    .btn-outline:hover { border-color: #555; color: #fff; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .upgrade-form { max-width: 480px; margin: 0 auto 3rem; padding: 0 2rem; }
+    .upgrade-form h2 { font-size: 1rem; font-weight: 600; color: #7dd3fc; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 1.25rem; }
+    label { display: block; font-size: 0.85rem; color: #888; margin-bottom: 0.4rem; }
+    input { width: 100%; background: #161616; border: 1px solid #333; border-radius: 6px; color: #e8e8e8; padding: 0.55rem 0.85rem; font-size: 0.95rem; margin-bottom: 1rem; }
+    input:focus { outline: none; border-color: #1d4ed8; }
+    .msg { margin-top: 1rem; font-size: 0.88rem; padding: 0.6rem 0.9rem; border-radius: 6px; display: none; }
+    .msg.error { background: #2a0a0a; border: 1px solid #7f1d1d; color: #fca5a5; display: block; }
+    .msg.success { background: #0a1f0a; border: 1px solid #166534; color: #86efac; display: block; }
+
+    footer { max-width: 860px; margin: 0 auto; padding: 1.5rem 2rem 3rem; border-top: 1px solid #1a1a1a; font-size: 0.82rem; color: #444; }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="margin-bottom:1rem"><a href="/">&larr; Back to AgentAudit</a></div>
+    <h1>Agent<span>Audit</span> Plans</h1>
+    <p class="subtitle">Start free, upgrade when you need more.</p>
+  </header>
+
+  <div class="plans">
+    <div class="plan">
+      <div class="plan-name">Free</div>
+      <div class="plan-price">$0 <span>/ mo</span></div>
+      <div class="plan-limit"><strong>500 requests</strong> / month</div>
+      <ul class="plan-features">
+        <li>Hash-chained audit logs</li>
+        <li>Chain integrity verification</li>
+        <li>Agent authorization control</li>
+        <li>JSON export</li>
+      </ul>
+      <button class="btn btn-outline" disabled>Current default</button>
+    </div>
+    <div class="plan featured">
+      <div class="plan-badge">Most Popular</div>
+      <div class="plan-name">Pro</div>
+      <div class="plan-price">&#8377;2,400 <span>/ mo</span></div>
+      <div class="plan-limit"><strong>10,000 requests</strong> / month</div>
+      <ul class="plan-features">
+        <li>Everything in Free</li>
+        <li>10× higher request limit</li>
+        <li>Priority support</li>
+        <li>Instant activation via Razorpay</li>
+      </ul>
+      <button class="btn btn-primary" id="upgrade-pro-btn" onclick="startUpgrade('pro')">Upgrade to Pro</button>
+    </div>
+    <div class="plan">
+      <div class="plan-name">Enterprise</div>
+      <div class="plan-price" style="font-size:1.4rem;padding-top:0.35rem">Custom</div>
+      <div class="plan-limit"><strong>Unlimited</strong> requests</div>
+      <ul class="plan-features">
+        <li>Everything in Pro</li>
+        <li>Unlimited API calls</li>
+        <li>Custom SLA</li>
+        <li>Dedicated support</li>
+      </ul>
+      <a class="btn btn-outline" href="mailto:sales@agentaudit.io" style="display:block;text-align:center;padding:0.65rem">Contact Sales</a>
+    </div>
+  </div>
+
+  <div class="upgrade-form">
+    <h2>Upgrade Your Key</h2>
+    <label for="apikey-input">Your API Key</label>
+    <input id="apikey-input" type="text" placeholder="aa_..." />
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <footer>&copy; 2026 AgentAudit &mdash; <a href="/">Home</a> &middot; <a href="/dashboard">Dashboard</a></footer>
+
+  <script>
+    const RZP_KEY = '${rzpKeyId}';
+
+    async function startUpgrade(plan) {
+      const apiKey = document.getElementById('apikey-input').value.trim();
+      const msg = document.getElementById('msg');
+      msg.className = 'msg';
+      msg.textContent = '';
+
+      if (!apiKey) {
+        msg.className = 'msg error';
+        msg.textContent = 'Please enter your API key first.';
+        document.getElementById('apikey-input').focus();
+        return;
+      }
+
+      const btn = document.getElementById('upgrade-pro-btn');
+      btn.disabled = true;
+      btn.textContent = 'Creating order...';
+
+      try {
+        const res = await fetch('/payment/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ api_key: apiKey, plan }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          msg.className = 'msg error';
+          msg.textContent = data.message || 'Failed to create payment order.';
+          btn.disabled = false;
+          btn.textContent = 'Upgrade to Pro';
+          return;
+        }
+
+        const options = {
+          key: RZP_KEY,
+          amount: data.amount,
+          currency: data.currency,
+          name: 'AgentAudit',
+          description: 'Pro Plan — 10,000 requests/month',
+          order_id: data.razorpay_order_id,
+          handler: async function(response) {
+            const verifyRes = await fetch('/payment/verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+              }),
+            });
+            const verifyData = await verifyRes.json();
+            if (verifyRes.ok) {
+              msg.className = 'msg success';
+              msg.textContent = '✓ Payment verified! Your key has been upgraded to Pro.';
+              btn.textContent = 'Upgraded!';
+            } else {
+              msg.className = 'msg error';
+              msg.textContent = verifyData.message || 'Payment verification failed.';
+              btn.disabled = false;
+              btn.textContent = 'Upgrade to Pro';
+            }
+          },
+          prefill: {},
+          theme: { color: '#1d4ed8' },
+          modal: {
+            ondismiss: function() {
+              btn.disabled = false;
+              btn.textContent = 'Upgrade to Pro';
+            }
+          }
+        };
+
+        const rzp = new Razorpay(options);
+        rzp.open();
+      } catch(e) {
+        msg.className = 'msg error';
+        msg.textContent = 'Network error. Please try again.';
+        btn.disabled = false;
+        btn.textContent = 'Upgrade to Pro';
+      }
+    }
+  </script>
+</body>
+</html>`
+})
+
 fastify.post('/apikey', async (request, reply) => {
   const { user, plan = 'free' } = request.body ?? {}
   if (!user) {
@@ -238,7 +453,7 @@ fastify.post('/apikey', async (request, reply) => {
     return reply.status(400).send({ error: 'Bad Request', message: `Invalid plan. Choose: ${Object.keys(PLANS).join(', ')}` })
   }
   const key = 'aa_' + randomBytes(24).toString('hex')
-  const record = { user, plan, created_at: new Date().toISOString(), usage_count: 0 }
+  const record = { user, plan, created_at: new Date().toISOString(), usage_count: 0, paid_order_id: null }
   apiKeys.set(key, record)
   return reply.status(201).send({
     key,
@@ -264,13 +479,133 @@ fastify.get('/apikeys', async (request, reply) => {
       limit: plan.limit,
       usage_pct: plan.limit === Infinity ? null : Math.round((record.usage_count / plan.limit) * 100),
       created_at: record.created_at,
+      paid_order_id: record.paid_order_id || null,
     })
   }
   return result
 })
 
-fastify.get('/plans', async (request, reply) => {
-  return Object.entries(PLANS).map(([id, p]) => ({ id, ...p }))
+// Create a Razorpay order for plan upgrade
+fastify.post('/payment/create', async (request, reply) => {
+  const { api_key, plan } = request.body ?? {}
+
+  if (!api_key || !plan) {
+    return reply.status(400).send({ error: 'Bad Request', message: '"api_key" and "plan" are required' })
+  }
+
+  const record = apiKeys.get(api_key)
+  if (!record) {
+    return reply.status(404).send({ error: 'Not Found', message: 'API key not found' })
+  }
+
+  const targetPlan = PLANS[plan]
+  if (!targetPlan) {
+    return reply.status(400).send({ error: 'Bad Request', message: `Invalid plan. Upgradeable plans: pro` })
+  }
+
+  if (!targetPlan.amount_inr) {
+    return reply.status(400).send({ error: 'Bad Request', message: 'This plan cannot be purchased directly. Contact sales.' })
+  }
+
+  if (record.plan === plan) {
+    return reply.status(400).send({ error: 'Bad Request', message: `Already on the ${targetPlan.label} plan` })
+  }
+
+  try {
+    const order = await razorpay.orders.create({
+      amount: targetPlan.amount_inr,
+      currency: 'INR',
+      receipt: `upgrade_${api_key.slice(0, 16)}_${Date.now()}`,
+      notes: {
+        api_key,
+        target_plan: plan,
+      },
+    })
+
+    pendingOrders.set(order.id, { api_key, target_plan: plan })
+
+    return reply.status(201).send({
+      razorpay_order_id: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      plan,
+      plan_label: targetPlan.label,
+    })
+  } catch (err) {
+    fastify.log.error(err)
+    return reply.status(502).send({ error: 'Bad Gateway', message: 'Failed to create Razorpay order' })
+  }
+})
+
+// Client-side payment verification (called after Razorpay checkout success)
+fastify.post('/payment/verify', async (request, reply) => {
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = request.body ?? {}
+
+  if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    return reply.status(400).send({ error: 'Bad Request', message: 'Missing payment fields' })
+  }
+
+  const expectedSig = createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+    .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+    .digest('hex')
+
+  if (expectedSig !== razorpay_signature) {
+    return reply.status(400).send({ error: 'Bad Request', message: 'Invalid payment signature' })
+  }
+
+  const pending = pendingOrders.get(razorpay_order_id)
+  if (!pending) {
+    return reply.status(404).send({ error: 'Not Found', message: 'Order not found or already processed' })
+  }
+
+  const record = apiKeys.get(pending.api_key)
+  if (!record) {
+    return reply.status(404).send({ error: 'Not Found', message: 'API key no longer exists' })
+  }
+
+  record.plan = pending.target_plan
+  record.paid_order_id = razorpay_order_id
+  pendingOrders.delete(razorpay_order_id)
+
+  return {
+    success: true,
+    message: `Plan upgraded to ${PLANS[pending.target_plan].label}`,
+    api_key: pending.api_key,
+    plan: pending.target_plan,
+    new_limit: PLANS[pending.target_plan].limit,
+  }
+})
+
+// Razorpay webhook (server-side verification fallback)
+fastify.post('/payment/webhook', {
+  config: { rawBody: true }
+}, async (request, reply) => {
+  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET
+  if (webhookSecret) {
+    const signature = request.headers['x-razorpay-signature']
+    const body = request.rawBody || JSON.stringify(request.body)
+    const expectedSig = createHmac('sha256', webhookSecret).update(body).digest('hex')
+    if (signature !== expectedSig) {
+      return reply.status(400).send({ error: 'Bad Request', message: 'Invalid webhook signature' })
+    }
+  }
+
+  const event = request.body
+  if (event?.event === 'payment.captured') {
+    const notes = event?.payload?.payment?.entity?.notes ?? {}
+    const { api_key, target_plan } = notes
+
+    if (api_key && target_plan && PLANS[target_plan]) {
+      const record = apiKeys.get(api_key)
+      if (record && record.plan !== target_plan) {
+        record.plan = target_plan
+        record.paid_order_id = event?.payload?.payment?.entity?.order_id || null
+        fastify.log.info(`Webhook: upgraded ${api_key} to ${target_plan}`)
+      }
+    }
+  }
+
+  return reply.status(200).send({ status: 'ok' })
 })
 
 fastify.get('/agent/:name', async (request, reply) => {
@@ -348,4 +683,5 @@ fastify.listen({ port: Number(process.env.PORT), host: '0.0.0.0' }, (err) => {
     process.exit(1)
   }
   fastify.log.info(`Admin key: ${ADMIN_KEY}`)
+  fastify.log.info(`Razorpay configured: ${!!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET)}`)
 })
