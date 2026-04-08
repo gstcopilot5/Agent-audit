@@ -1,6 +1,7 @@
 const fastify = require('fastify')({ logger: true })
 
 const logs = []
+const authorizations = []
 
 fastify.get('/', async (request, reply) => {
   return { hello: 'world' }
@@ -67,6 +68,22 @@ fastify.get('/dashboard', async (request, reply) => {
   </script>
 </body>
 </html>`
+})
+
+fastify.post('/authorize', async (request, reply) => {
+  const { agent_name, authorized_by, permissions } = request.body
+  const entry = {
+    agent_name,
+    authorized_by,
+    permissions,
+    timestamp: new Date().toISOString()
+  }
+  authorizations.push(entry)
+  return reply.status(201).send(entry)
+})
+
+fastify.get('/authorizations', async (request, reply) => {
+  return authorizations
 })
 
 fastify.post('/log', async (request, reply) => {
