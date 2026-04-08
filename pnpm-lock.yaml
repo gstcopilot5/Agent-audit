@@ -153,6 +153,10 @@ overrides:
 importers:
 
   .:
+    dependencies:
+      fastify:
+        specifier: ^5
+        version: 5.8.4
     devDependencies:
       prettier:
         specifier: ^3.8.1
