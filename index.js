@@ -1,8 +1,19 @@
 const fastify = require('fastify')({ logger: true })
 const { createHash } = require('crypto')
 
+const API_KEY = process.env.API_KEY || 'dev-key-change-me'
+
 const logs = []
 const authorizations = []
+
+// Global API key guard — all routes except /dashboard
+fastify.addHook('onRequest', async (request, reply) => {
+  if (request.url === '/dashboard') return
+  const key = request.headers['x-api-key']
+  if (!key || key !== API_KEY) {
+    return reply.status(401).send({ error: 'Unauthorized', message: 'Missing or invalid x-api-key header' })
+  }
+})
 
 fastify.get('/', async (request, reply) => {
   return { hello: 'world' }
@@ -50,8 +61,9 @@ fastify.get('/dashboard', async (request, reply) => {
     </tbody>
   </table>
   <script>
+    const API_KEY = '${API_KEY}'
     async function load() {
-      const res = await fetch('/logs')
+      const res = await fetch('/logs', { headers: { 'x-api-key': API_KEY } })
       const logs = await res.json()
       const tbody = document.getElementById('tbody')
       if (logs.length === 0) {
@@ -145,4 +157,5 @@ fastify.listen({ port: Number(process.env.PORT), host: '0.0.0.0' }, (err) => {
     fastify.log.error(err)
     process.exit(1)
   }
+  fastify.log.info(`API key: ${API_KEY}`)
 })
