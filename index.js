@@ -1,4 +1,5 @@
 const fastify = require('fastify')({ logger: true })
+const { createHash } = require('crypto')
 
 const logs = []
 const authorizations = []
@@ -102,13 +103,11 @@ fastify.post('/log', async (request, reply) => {
   if (!authorized) {
     return reply.status(403).send({ error: 'Forbidden', message: `Agent "${agent_name}" is not authorized` })
   }
-  const entry = {
-    agent_name,
-    action,
-    input,
-    output,
-    timestamp: new Date().toISOString()
-  }
+  const timestamp = new Date().toISOString()
+  const prev_hash = logs.length > 0 ? logs[logs.length - 1].hash : '0'.repeat(64)
+  const payload = JSON.stringify({ agent_name, action, input, output, timestamp, prev_hash })
+  const hash = createHash('sha256').update(payload).digest('hex')
+  const entry = { agent_name, action, input, output, timestamp, prev_hash, hash }
   logs.push(entry)
   return reply.status(201).send(entry)
 })
