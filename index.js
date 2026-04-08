@@ -70,6 +70,16 @@ fastify.get('/dashboard', async (request, reply) => {
 </html>`
 })
 
+fastify.get('/agent/:name', async (request, reply) => {
+  const { name } = request.params
+  const agentAuthorizations = authorizations.filter(a => a.agent_name === name)
+  const agentLogs = logs.filter(l => l.agent_name === name)
+  if (agentAuthorizations.length === 0 && agentLogs.length === 0) {
+    return reply.status(404).send({ error: 'Not Found', message: `No records found for agent "${name}"` })
+  }
+  return { agent_name: name, authorizations: agentAuthorizations, logs: agentLogs }
+})
+
 fastify.post('/authorize', async (request, reply) => {
   const { agent_name, authorized_by, permissions } = request.body
   const entry = {
