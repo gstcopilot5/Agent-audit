@@ -97,6 +97,15 @@ fastify.get('/authorizations', async (request, reply) => {
   return authorizations
 })
 
+fastify.get('/export', async (request, reply) => {
+  const filename = `agentaudit-export-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+  const data = JSON.stringify({ exported_at: new Date().toISOString(), authorizations, logs }, null, 2)
+  reply
+    .header('Content-Type', 'application/json')
+    .header('Content-Disposition', `attachment; filename="${filename}"`)
+  return data
+})
+
 fastify.get('/verify', async (request, reply) => {
   if (logs.length === 0) {
     return { status: 'valid', message: 'No logs to verify', entries: 0 }
