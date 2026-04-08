@@ -88,6 +88,10 @@ fastify.get('/authorizations', async (request, reply) => {
 
 fastify.post('/log', async (request, reply) => {
   const { agent_name, action, input, output } = request.body
+  const authorized = authorizations.some(a => a.agent_name === agent_name)
+  if (!authorized) {
+    return reply.status(403).send({ error: 'Forbidden', message: `Agent "${agent_name}" is not authorized` })
+  }
   const entry = {
     agent_name,
     action,
