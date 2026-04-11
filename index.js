@@ -41,7 +41,6 @@ app.post("/audit", async (req, res) => {
     const metaDescription = $('meta[name="description"]').attr("content");
     const h1 = $("h1").first().text();
 
-    // PageSpeed
     );
 
 
