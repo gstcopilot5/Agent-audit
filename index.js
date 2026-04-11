@@ -40,7 +40,7 @@ function upgradeKey(key, record, targetPlan, orderId) {
   fastify.log.info({ key, email: record.user, plan: targetPlan, order_id: orderId }, 'Plan upgraded')
 }
 
-const PUBLIC_ROUTES = ['/', '/dashboard', '/apikey', '/plans', '/payment/create', '/payment/verify', '/payment/webhook', '/health']
+const PUBLIC_ROUTES = ['/', '/dashboard', '/apikey', '/plans', '/payment/create', '/payment/verify', '/payment/webhook', '/health', '/me']
 
 // Global auth hook
 fastify.addHook('onRequest', async (request, reply) => {
@@ -208,6 +208,26 @@ fastify.get('/logs', async (request, reply) => {
   return logs
 })
 
+fastify.get('/me', async (request, reply) => {
+  const key = request.headers['x-api-key']
+  if (key === ADMIN_KEY) {
+    return { user: 'admin', plan: 'enterprise', limit: Infinity, usage_count: null, usage_pct: null }
+  }
+  const record = apiKeys.get(key)
+  if (!record) return reply.status(404).send({ error: 'Not Found', message: 'API key not found' })
+  const plan = PLANS[record.plan]
+  return {
+    user: record.user,
+    plan: record.plan,
+    plan_label: plan.label,
+    limit: plan.limit,
+    usage_count: record.usage_count,
+    usage_pct: plan.limit === Infinity ? null : Math.round((record.usage_count / plan.limit) * 100),
+    created_at: record.created_at,
+    upgraded_at: record.upgraded_at || null,
+  }
+})
+
 fastify.get('/dashboard', async (request, reply) => {
   reply.type('text/html')
   return `<!DOCTYPE html>
@@ -215,50 +235,356 @@ fastify.get('/dashboard', async (request, reply) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Agent Audit Dashboard</title>
+  <title>AgentAudit — Dashboard</title>
   <style>
-    body { font-family: sans-serif; margin: 2rem; background: #f9f9f9; color: #222; }
-    h1 { font-size: 1.4rem; margin-bottom: 1rem; }
-    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
-    th { background: #1a1a1a; color: #fff; text-align: left; padding: 0.75rem 1rem; font-size: 0.85rem; }
-    td { padding: 0.7rem 1rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e8e8e8; line-height: 1.5; min-height: 100vh; }
+    a { color: #7dd3fc; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Key bar ── */
+    .key-bar { background: #111; border-bottom: 1px solid #1e1e1e; padding: 0.75rem 1.5rem; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+    .key-bar-brand { font-weight: 700; color: #fff; font-size: 0.95rem; margin-right: 0.5rem; white-space: nowrap; }
+    .key-bar-brand span { color: #7dd3fc; }
+    .key-input { flex: 1; min-width: 220px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px; color: #e8e8e8; padding: 0.45rem 0.85rem; font-size: 0.88rem; font-family: 'SF Mono','Fira Code',monospace; }
+    .key-input:focus { outline: none; border-color: #1d4ed8; }
+    .key-input::placeholder { color: #444; }
+    .btn { padding: 0.45rem 1rem; border-radius: 6px; font-size: 0.85rem; font-weight: 600; border: none; cursor: pointer; white-space: nowrap; }
+    .btn-primary { background: #1d4ed8; color: #fff; }
+    .btn-primary:hover { background: #2563eb; }
+    .btn-outline { background: transparent; border: 1px solid #2a2a2a; color: #aaa; }
+    .btn-outline:hover { border-color: #444; color: #fff; }
+    .btn-green { background: #166534; color: #4ade80; border: 1px solid #166534; }
+    .btn-green:hover { background: #15803d; }
+    .nav-links { display: flex; gap: 1rem; font-size: 0.82rem; margin-left: auto; align-items: center; }
+
+    /* ── Page wrapper ── */
+    .page { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+    /* ── Section heading ── */
+    .section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem; }
+    .section-title { font-size: 0.78rem; font-weight: 700; color: #7dd3fc; text-transform: uppercase; letter-spacing: 0.1em; }
+
+    /* ── User badge ── */
+    .user-badge { display: none; align-items: center; gap: 0.5rem; background: #161616; border: 1px solid #222; border-radius: 6px; padding: 0.35rem 0.75rem; font-size: 0.82rem; }
+    .user-badge.show { display: flex; }
+    .plan-chip { font-size: 0.72rem; font-weight: 700; padding: 0.15rem 0.55rem; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .chip-free { background: #1a1a1a; color: #888; border: 1px solid #2a2a2a; }
+    .chip-pro  { background: #1a3a6a; color: #7dd3fc; border: 1px solid #1d4ed8; }
+    .chip-enterprise { background: #1a2a1a; color: #4ade80; border: 1px solid #166534; }
+
+    /* ── Stats grid ── */
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 2rem; }
+    @media (max-width: 800px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 420px) { .stats { grid-template-columns: 1fr; } }
+    .stat-card { background: #111; border: 1px solid #1e1e1e; border-radius: 10px; padding: 1.25rem 1.5rem; }
+    .stat-label { font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 0.5rem; }
+    .stat-value { font-size: 2rem; font-weight: 800; color: #fff; line-height: 1; }
+    .stat-value.green { color: #4ade80; }
+    .stat-value.red   { color: #f87171; }
+    .stat-value.blue  { color: #7dd3fc; }
+    .stat-sub { font-size: 0.75rem; color: #555; margin-top: 0.35rem; }
+    .progress-bar { margin-top: 0.6rem; height: 4px; background: #1e1e1e; border-radius: 2px; overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: 2px; background: #1d4ed8; transition: width 0.4s; }
+
+    /* ── Verify banner ── */
+    .verify-banner { display: none; align-items: center; gap: 0.75rem; padding: 0.75rem 1.25rem; border-radius: 8px; font-size: 0.88rem; font-weight: 500; margin-bottom: 1.5rem; }
+    .verify-banner.show { display: flex; }
+    .verify-banner.valid { background: #0a1f0a; border: 1px solid #166534; color: #86efac; }
+    .verify-banner.tampered { background: #2a0a0a; border: 1px solid #7f1d1d; color: #fca5a5; }
+
+    /* ── Action bar ── */
+    .action-bar { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+
+    /* ── Table ── */
+    .table-wrap { background: #111; border: 1px solid #1e1e1e; border-radius: 10px; overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; }
+    thead { position: sticky; top: 0; z-index: 1; }
+    th { background: #161616; color: #666; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid #1e1e1e; }
+    td { padding: 0.75rem 1rem; border-bottom: 1px solid #141414; font-size: 0.87rem; color: #ccc; vertical-align: middle; }
     tr:last-child td { border-bottom: none; }
-    tr:hover td { background: #f5f5f5; }
-    .empty { text-align: center; padding: 2rem; color: #888; }
+    tr:hover td { background: #141414; }
+    .mono { font-family: 'SF Mono','Fira Code',monospace; font-size: 0.8rem; }
+    .status-badge { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; font-weight: 700; padding: 0.2rem 0.6rem; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .badge-verified { background: #0a1a0a; color: #4ade80; border: 1px solid #166534; }
+    .badge-tampered { background: #2a0a0a; color: #f87171; border: 1px solid #7f1d1d; }
+    .badge-unknown  { background: #1a1a1a; color: #666;    border: 1px solid #2a2a2a; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .dot-green { background: #4ade80; }
+    .dot-red   { background: #f87171; }
+    .dot-gray  { background: #555; }
+
+    /* ── Empty / loading states ── */
+    .state-row td { text-align: center; padding: 3rem 1rem; color: #444; font-size: 0.88rem; }
+    .locked-msg { text-align: center; padding: 4rem 1rem; color: #444; }
+    .locked-msg p { margin-bottom: 0.5rem; }
+    .locked-msg span { font-size: 1.8rem; display: block; margin-bottom: 0.75rem; }
+
+    /* ── Responsive table scroll ── */
+    .scroll-x { overflow-x: auto; }
+
+    @media (max-width: 600px) {
+      .key-bar { padding: 0.65rem 1rem; }
+      .page { padding: 1.25rem 1rem; }
+      .stat-value { font-size: 1.6rem; }
+      .nav-links { display: none; }
+    }
   </style>
 </head>
 <body>
-  <h1>Agent Audit Logs</h1>
-  <table>
-    <thead>
-      <tr>
-        <th>Agent Name</th>
-        <th>Action</th>
-        <th>Timestamp</th>
-      </tr>
-    </thead>
-    <tbody id="tbody">
-      <tr><td colspan="3" class="empty">Loading...</td></tr>
-    </tbody>
-  </table>
+
+  <!-- Key bar -->
+  <div class="key-bar">
+    <div class="key-bar-brand">Agent<span>Audit</span></div>
+    <input id="key-input" class="key-input" type="text" placeholder="Paste your API key (aa_...)" autocomplete="off" spellcheck="false" />
+    <button class="btn btn-primary" onclick="loadDashboard()">Load</button>
+    <div class="nav-links">
+      <a href="/">Home</a>
+      <a href="/plans">Plans</a>
+    </div>
+  </div>
+
+  <div class="page">
+
+    <!-- User badge + section title -->
+    <div class="section-head" style="margin-bottom:1.5rem">
+      <h1 style="font-size:1.2rem;font-weight:700;color:#fff">Audit Dashboard</h1>
+      <div class="user-badge" id="user-badge">
+        <span id="badge-user" style="color:#aaa;font-size:0.82rem"></span>
+        <span class="plan-chip chip-free" id="badge-plan">free</span>
+      </div>
+    </div>
+
+    <!-- Verify banner -->
+    <div class="verify-banner" id="verify-banner"></div>
+
+    <!-- Stats cards -->
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">Total Logs</div>
+        <div class="stat-value blue" id="s-total">—</div>
+        <div class="stat-sub" id="s-total-sub">load your key to begin</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Verified Logs</div>
+        <div class="stat-value green" id="s-verified">—</div>
+        <div class="stat-sub" id="s-verified-sub">hash chain intact</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Tamper Alerts</div>
+        <div class="stat-value red" id="s-tampered">—</div>
+        <div class="stat-sub" id="s-tampered-sub">entries flagged</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">API Usage</div>
+        <div class="stat-value" id="s-usage">—</div>
+        <div class="stat-sub" id="s-usage-sub">requests used</div>
+        <div class="progress-bar"><div class="progress-fill" id="usage-bar" style="width:0%"></div></div>
+      </div>
+    </div>
+
+    <!-- Logs section -->
+    <div class="section-head">
+      <div class="section-title">Audit Logs</div>
+      <div class="action-bar">
+        <button class="btn btn-outline" id="verify-btn" onclick="verifyChain()" disabled>Verify Chain</button>
+        <button class="btn btn-green" id="export-btn" onclick="downloadReport()" disabled>Download Report</button>
+      </div>
+    </div>
+
+    <div class="scroll-x">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Agent</th>
+              <th>Action</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="tbody">
+            <tr class="state-row"><td colspan="4">
+              <div class="locked-msg">
+                <span>&#128274;</span>
+                <p>Enter your API key above and click <strong>Load</strong></p>
+                <p>to view your audit logs.</p>
+              </div>
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
   <script>
-    const API_KEY = '${ADMIN_KEY}'
-    async function load() {
-      const res = await fetch('/logs', { headers: { 'x-api-key': API_KEY } })
-      const logs = await res.json()
+    let currentKey = ''
+    let verifyState = null   // cached verify result
+
+    function h(str) {
+      return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    }
+
+    function fmtTime(iso) {
+      try {
+        const d = new Date(iso)
+        return d.toLocaleString(undefined, { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit' })
+      } catch { return iso }
+    }
+
+    function statusBadge(idx, verifyResult) {
+      if (!verifyResult) return '<span class="status-badge badge-unknown"><span class="dot dot-gray"></span>Unknown</span>'
+      if (verifyResult.status === 'valid') {
+        return '<span class="status-badge badge-verified"><span class="dot dot-green"></span>Verified</span>'
+      }
+      const at = verifyResult.at_index ?? -1
+      if (idx < at) return '<span class="status-badge badge-verified"><span class="dot dot-green"></span>Verified</span>'
+      if (idx === at) return '<span class="status-badge badge-tampered"><span class="dot dot-red"></span>Tampered</span>'
+      return '<span class="status-badge badge-unknown"><span class="dot dot-gray"></span>Unknown</span>'
+    }
+
+    function renderStats(logsData, verifyResult, meData) {
+      const total = logsData.length
+      let verified = 0, tampered = 0
+      if (verifyResult) {
+        if (verifyResult.status === 'valid') {
+          verified = total; tampered = 0
+        } else {
+          const at = verifyResult.at_index ?? 0
+          verified = at; tampered = 1
+        }
+      }
+
+      document.getElementById('s-total').textContent = total
+      document.getElementById('s-total-sub').textContent = total === 1 ? '1 entry recorded' : \`\${total} entries recorded\`
+      document.getElementById('s-verified').textContent = verified
+      document.getElementById('s-verified-sub').textContent = verifyResult ? (verifyResult.status === 'valid' ? 'chain intact' : 'before tamper point') : 'run verify to check'
+      document.getElementById('s-tampered').textContent = tampered
+      document.getElementById('s-tampered-sub').textContent = tampered === 0 ? 'no issues detected' : 'chain compromised'
+
+      if (meData) {
+        const used = meData.usage_count ?? 0
+        const limit = meData.limit
+        const isUnlimited = limit === null || limit === Infinity || limit === 0
+        document.getElementById('s-usage').textContent = isUnlimited ? used : \`\${used} / \${limit.toLocaleString()}\`
+        document.getElementById('s-usage-sub').textContent = isUnlimited ? 'unlimited plan' : \`\${meData.usage_pct ?? 0}% of \${meData.plan_label} limit\`
+        const pct = isUnlimited ? 0 : Math.min(meData.usage_pct ?? 0, 100)
+        document.getElementById('usage-bar').style.width = pct + '%'
+        document.getElementById('usage-bar').style.background = pct > 90 ? '#ef4444' : pct > 70 ? '#f59e0b' : '#1d4ed8'
+
+        const badge = document.getElementById('user-badge')
+        badge.classList.add('show')
+        document.getElementById('badge-user').textContent = meData.user
+        const chip = document.getElementById('badge-plan')
+        chip.textContent = meData.plan_label || meData.plan
+        chip.className = 'plan-chip ' + ({ free:'chip-free', pro:'chip-pro', enterprise:'chip-enterprise' }[meData.plan] || 'chip-free')
+      }
+    }
+
+    function renderTable(logsData, verifyResult) {
       const tbody = document.getElementById('tbody')
-      if (logs.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="3" class="empty">No logs yet.</td></tr>'
+      if (logsData.length === 0) {
+        tbody.innerHTML = '<tr class="state-row"><td colspan="4">No audit logs yet. Authorize an agent and start logging.</td></tr>'
         return
       }
-      tbody.innerHTML = logs.map(l => \`<tr>
-        <td>\${l.agent_name ?? ''}</td>
-        <td>\${l.action ?? ''}</td>
-        <td>\${l.timestamp ?? ''}</td>
+      tbody.innerHTML = logsData.map((l, i) => \`<tr>
+        <td class="mono">\${fmtTime(l.timestamp)}</td>
+        <td style="color:#e2e8f0;font-weight:500">\${h(l.agent_name)}</td>
+        <td>\${h(l.action)}</td>
+        <td>\${statusBadge(i, verifyResult)}</td>
       </tr>\`).join('')
     }
-    load()
-    setInterval(load, 5000)
+
+    function showVerifyBanner(verifyResult) {
+      const banner = document.getElementById('verify-banner')
+      if (!verifyResult) { banner.classList.remove('show'); return }
+      if (verifyResult.status === 'valid') {
+        banner.className = 'verify-banner valid show'
+        banner.innerHTML = \`<span>&#10003;</span> Chain verified — all \${verifyResult.entries} entries are intact.\`
+      } else {
+        banner.className = 'verify-banner tampered show'
+        banner.innerHTML = \`<span>&#9888;</span> Tamper detected at entry #\${verifyResult.at_index} &mdash; \${h(verifyResult.reason)}.\`
+      }
+    }
+
+    async function loadDashboard() {
+      const key = document.getElementById('key-input').value.trim()
+      if (!key) return
+      currentKey = key
+
+      const tbody = document.getElementById('tbody')
+      tbody.innerHTML = '<tr class="state-row"><td colspan="4">Loading…</td></tr>'
+      document.getElementById('verify-btn').disabled = true
+      document.getElementById('export-btn').disabled = true
+      document.getElementById('verify-banner').classList.remove('show')
+
+      const hdrs = { 'x-api-key': key }
+      try {
+        const [logsRes, verifyRes, meRes] = await Promise.all([
+          fetch('/logs',   { headers: hdrs }),
+          fetch('/verify', { headers: hdrs }),
+          fetch('/me',     { headers: hdrs }),
+        ])
+
+        if (logsRes.status === 401) {
+          tbody.innerHTML = '<tr class="state-row"><td colspan="4">Invalid API key. Check and try again.</td></tr>'
+          return
+        }
+
+        const logsData   = logsRes.ok   ? await logsRes.json()   : []
+        const verifyData = verifyRes.ok  ? await verifyRes.json() : null
+        const meData     = meRes.ok      ? await meRes.json()     : null
+
+        verifyState = verifyData
+        renderStats(logsData, verifyData, meData)
+        renderTable(logsData, verifyData)
+        showVerifyBanner(verifyData)
+
+        document.getElementById('verify-btn').disabled = false
+        document.getElementById('export-btn').disabled = false
+      } catch(e) {
+        tbody.innerHTML = '<tr class="state-row"><td colspan="4">Network error. Is the server reachable?</td></tr>'
+      }
+    }
+
+    async function verifyChain() {
+      if (!currentKey) return
+      const btn = document.getElementById('verify-btn')
+      btn.disabled = true
+      btn.textContent = 'Verifying…'
+      try {
+        const res = await fetch('/verify', { headers: { 'x-api-key': currentKey } })
+        const data = await res.json()
+        verifyState = data
+        showVerifyBanner(data)
+        // Re-fetch logs to re-render status badges
+        const logsRes = await fetch('/logs', { headers: { 'x-api-key': currentKey } })
+        if (logsRes.ok) renderTable(await logsRes.json(), data)
+      } finally {
+        btn.disabled = false
+        btn.textContent = 'Verify Chain'
+      }
+    }
+
+    async function downloadReport() {
+      if (!currentKey) return
+      const res = await fetch('/export', { headers: { 'x-api-key': currentKey } })
+      if (!res.ok) { alert('Export failed'); return }
+      const blob = await res.blob()
+      const cd = res.headers.get('Content-Disposition') || ''
+      const match = cd.match(/filename="([^"]+)"/)
+      const filename = match ? match[1] : 'agentaudit-export.json'
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = filename; a.click()
+      URL.revokeObjectURL(url)
+    }
+
+    // Allow Enter key in key input to load
+    document.getElementById('key-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') loadDashboard()
+    })
   </script>
 </body>
 </html>`
