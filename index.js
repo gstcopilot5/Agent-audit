@@ -42,10 +42,8 @@ app.post("/audit", async (req, res) => {
     const h1 = $("h1").first().text();
 
     // PageSpeed
-    const ps = await axios.get(
     );
 
-      ps.data.lighthouseResult.categories.performance.score * 100;
 
     // AI Prompt
     const prompt = `
