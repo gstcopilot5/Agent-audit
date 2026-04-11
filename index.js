@@ -3,7 +3,12 @@ const app = express();
 
 app.use(express.json());
 
-const axios = require("axios").create({ httpsAgent: new (require("https").Agent)({ rejectUnauthorized: false }) });
+const https = require("https");
+const axios = require("axios").create({
+  httpsAgent: new https.Agent({
+    rejectUnauthorized: false
+  })
+});
 const cheerio = require("cheerio");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
