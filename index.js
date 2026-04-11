@@ -309,6 +309,15 @@ fastify.get('/plans', async (request, reply) => {
     .msg { margin-top: 1rem; font-size: 0.88rem; padding: 0.6rem 0.9rem; border-radius: 6px; display: none; }
     .msg.error { background: #2a0a0a; border: 1px solid #7f1d1d; color: #fca5a5; display: block; }
     .msg.success { background: #0a1f0a; border: 1px solid #166534; color: #86efac; display: block; }
+    .key-reveal { display: none; margin-top: 1.25rem; background: #0d1a0d; border: 1px solid #166534; border-radius: 8px; padding: 1.1rem 1.25rem; }
+    .key-reveal.show { display: block; }
+    .key-reveal p { font-size: 0.82rem; color: #86efac; margin-bottom: 0.6rem; }
+    .key-reveal strong { display: block; font-size: 0.82rem; color: #aaa; margin-bottom: 0.35rem; letter-spacing: 0.04em; text-transform: uppercase; }
+    .key-code { display: flex; align-items: center; gap: 0.5rem; background: #0a120a; border: 1px solid #1a3a1a; border-radius: 5px; padding: 0.5rem 0.75rem; font-family: 'SF Mono','Fira Code',monospace; font-size: 0.82rem; color: #4ade80; word-break: break-all; }
+    .copy-btn { flex-shrink: 0; background: #1a3a1a; border: none; color: #4ade80; padding: 0.25rem 0.6rem; border-radius: 4px; font-size: 0.75rem; cursor: pointer; }
+    .copy-btn:hover { background: #166534; }
+    .continue-btn { margin-top: 1rem; display: block; width: 100%; text-align: center; padding: 0.65rem; background: #1d4ed8; color: #fff; border: none; border-radius: 7px; font-size: 0.95rem; font-weight: 600; cursor: pointer; }
+    .continue-btn:hover { background: #2563eb; }
 
     footer { max-width: 860px; margin: 0 auto; padding: 1.5rem 2rem 3rem; border-top: 1px solid #1a1a1a; font-size: 0.82rem; color: #444; }
   </style>
@@ -365,6 +374,15 @@ fastify.get('/plans', async (request, reply) => {
     <label for="email-input">Your account email</label>
     <input id="email-input" type="email" placeholder="you@example.com" />
     <div class="msg" id="msg"></div>
+    <div class="key-reveal" id="key-reveal">
+      <p>&#127881; Account created! Your API key has been generated — <strong>copy it now, it won't be shown again.</strong></p>
+      <strong>Your API Key</strong>
+      <div class="key-code">
+        <span id="key-value"></span>
+        <button class="copy-btn" onclick="copyKey()">Copy</button>
+      </div>
+      <button class="continue-btn" id="continue-btn">Continue to Checkout &rarr;</button>
+    </div>
   </div>
 
   <footer>&copy; 2026 AgentAudit &mdash; <a href="/">Home</a> &middot; <a href="/dashboard">Dashboard</a></footer>
@@ -372,22 +390,74 @@ fastify.get('/plans', async (request, reply) => {
   <script>
     const RZP_KEY = '${rzpKeyId}';
 
+    function copyKey() {
+      const val = document.getElementById('key-value').textContent;
+      navigator.clipboard.writeText(val).then(() => {
+        const btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = 'Copy', 2000);
+      });
+    }
+
+    function buildRazorpayOptions(data, email, msg, upgradeBtn) {
+      return {
+        key: RZP_KEY,
+        amount: data.amount,
+        currency: data.currency,
+        name: 'AgentAudit',
+        description: 'Pro Plan — 10,000 requests/month',
+        order_id: data.razorpay_order_id,
+        handler: async function(response) {
+          const verifyRes = await fetch('/payment/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+            }),
+          });
+          const verifyData = await verifyRes.json();
+          document.getElementById('key-reveal').className = 'key-reveal';
+          if (verifyRes.ok) {
+            msg.className = 'msg success';
+            msg.textContent = \`✓ Payment verified! \${email} has been upgraded to Pro (10,000 requests/month).\`;
+            upgradeBtn.textContent = 'Upgraded!';
+          } else {
+            msg.className = 'msg error';
+            msg.textContent = verifyData.message || 'Payment verification failed.';
+            upgradeBtn.disabled = false;
+            upgradeBtn.textContent = 'Upgrade to Pro';
+          }
+        },
+        prefill: { email },
+        theme: { color: '#1d4ed8' },
+        modal: {
+          ondismiss: function() {
+            upgradeBtn.disabled = false;
+            upgradeBtn.textContent = 'Upgrade to Pro';
+          }
+        }
+      };
+    }
+
     async function startUpgrade(plan) {
       const email = document.getElementById('email-input').value.trim();
       const msg = document.getElementById('msg');
       msg.className = 'msg';
       msg.textContent = '';
+      document.getElementById('key-reveal').className = 'key-reveal';
 
       if (!email || !email.includes('@')) {
         msg.className = 'msg error';
-        msg.textContent = 'Please enter the email address associated with your API key.';
+        msg.textContent = 'Please enter the email address associated with your account.';
         document.getElementById('email-input').focus();
         return;
       }
 
-      const btn = document.getElementById('upgrade-pro-btn');
-      btn.disabled = true;
-      btn.textContent = 'Creating order...';
+      const upgradeBtn = document.getElementById('upgrade-pro-btn');
+      upgradeBtn.disabled = true;
+      upgradeBtn.textContent = 'Setting up...';
 
       try {
         const res = await fetch('/payment/create', {
@@ -396,64 +466,38 @@ fastify.get('/plans', async (request, reply) => {
           body: JSON.stringify({ email, plan }),
         });
         const data = await res.json();
+
         if (!res.ok) {
           msg.className = 'msg error';
           msg.textContent = data.message || 'Failed to create payment order.';
-          btn.disabled = false;
-          btn.textContent = 'Upgrade to Pro';
+          upgradeBtn.disabled = false;
+          upgradeBtn.textContent = 'Upgrade to Pro';
           return;
         }
+
+        const rzpOptions = buildRazorpayOptions(data, email, msg, upgradeBtn);
+        const rzp = new Razorpay(rzpOptions);
+
         if (data.auto_created && data.api_key) {
-          msg.className = 'msg success';
-          msg.textContent = \`New account created for \${email}. Your API key: \${data.api_key} — save this now!\`;
+          // New user: show key first, open checkout on explicit click
+          document.getElementById('key-value').textContent = data.api_key;
+          document.getElementById('key-reveal').className = 'key-reveal show';
+          upgradeBtn.disabled = false;
+          upgradeBtn.textContent = 'Upgrade to Pro';
+
+          document.getElementById('continue-btn').onclick = function() {
+            document.getElementById('key-reveal').className = 'key-reveal';
+            rzp.open();
+          };
+        } else {
+          // Existing user: go straight to checkout
+          rzp.open();
         }
-
-        const options = {
-          key: RZP_KEY,
-          amount: data.amount,
-          currency: data.currency,
-          name: 'AgentAudit',
-          description: 'Pro Plan — 10,000 requests/month',
-          order_id: data.razorpay_order_id,
-          handler: async function(response) {
-            const verifyRes = await fetch('/payment/verify', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                razorpay_order_id: response.razorpay_order_id,
-                razorpay_payment_id: response.razorpay_payment_id,
-                razorpay_signature: response.razorpay_signature,
-              }),
-            });
-            const verifyData = await verifyRes.json();
-            if (verifyRes.ok) {
-              msg.className = 'msg success';
-              msg.textContent = \`✓ Payment verified! \${email} has been upgraded to Pro (10,000 requests/month).\`;
-              btn.textContent = 'Upgraded!';
-            } else {
-              msg.className = 'msg error';
-              msg.textContent = verifyData.message || 'Payment verification failed.';
-              btn.disabled = false;
-              btn.textContent = 'Upgrade to Pro';
-            }
-          },
-          prefill: { email },
-          theme: { color: '#1d4ed8' },
-          modal: {
-            ondismiss: function() {
-              btn.disabled = false;
-              btn.textContent = 'Upgrade to Pro';
-            }
-          }
-        };
-
-        const rzp = new Razorpay(options);
-        rzp.open();
       } catch(e) {
         msg.className = 'msg error';
         msg.textContent = 'Network error. Please try again.';
-        btn.disabled = false;
-        btn.textContent = 'Upgrade to Pro';
+        upgradeBtn.disabled = false;
+        upgradeBtn.textContent = 'Upgrade to Pro';
       }
     }
   </script>
