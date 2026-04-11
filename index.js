@@ -57,19 +57,6 @@ Give:
 4. Exact fixes (copy-paste ready)`
 
 
-
-Give:
-
-1. SEO issues
-
-2. UX problems
-
-3. Conversion improvements
-
-4. Exact fixes (copy-paste ready)`;
-
-res.json({
-  url,
   title,
   metaDescription,
   h1,
