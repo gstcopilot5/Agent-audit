@@ -403,6 +403,10 @@ fastify.get('/plans', async (request, reply) => {
           btn.textContent = 'Upgrade to Pro';
           return;
         }
+        if (data.auto_created && data.api_key) {
+          msg.className = 'msg success';
+          msg.textContent = \`New account created for \${email}. Your API key: \${data.api_key} — save this now!\`;
+        }
 
         const options = {
           key: RZP_KEY,
@@ -506,9 +510,15 @@ fastify.post('/payment/create', async (request, reply) => {
     return reply.status(400).send({ error: 'Bad Request', message: '"email" and "plan" are required' })
   }
 
-  const found = findKeyByEmail(email)
+  let found = findKeyByEmail(email)
+  let autoCreated = false
   if (!found) {
-    return reply.status(404).send({ error: 'Not Found', message: `No API key found for email "${email}"` })
+    const newKey = 'aa_' + randomBytes(24).toString('hex')
+    const newRecord = { user: email, plan: 'free', created_at: new Date().toISOString(), usage_count: 0, paid_order_id: null }
+    apiKeys.set(newKey, newRecord)
+    found = { key: newKey, record: newRecord }
+    autoCreated = true
+    fastify.log.info({ email, key: newKey }, 'Auto-created API key for new user during upgrade')
   }
   const { key: api_key, record } = found
 
@@ -545,6 +555,8 @@ fastify.post('/payment/create', async (request, reply) => {
       plan,
       plan_label: targetPlan.label,
       email,
+      api_key: autoCreated ? api_key : undefined,
+      auto_created: autoCreated,
     })
   } catch (err) {
     const rzpError = err?.error || err
