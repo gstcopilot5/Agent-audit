@@ -44,13 +44,17 @@ app.post("/audit", async (req, res) => {
     
 
 
+
 const prompt = `Website: ${url}
-
 Title: ${title}
-
 Meta: ${metaDescription || "missing"}
-
 H1: ${h1 || "missing"}
+
+Give:
+1. SEO issues
+2. UX problems
+3. Conversion improvements
+4. Exact fixes (copy-paste ready)`
 
 
 
