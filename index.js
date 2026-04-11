@@ -60,6 +60,20 @@ const result = await model.generateContent(prompt);
 
 const aiText = result.response.text();
 
+res.json({
+  url,
+  title,
+  metaDescription,
+  h1,
+  aiReport: aiText
+});
+
+} catch (e) {
+ console.error(e);
+ res.status(500).json({ error: "Audit failed" });
+}
+});
+
 
 
 res.json({
@@ -91,6 +105,20 @@ Give:
 
     const result = await model.generateContent(prompt);
     const aiText = result.response.text();
+
+res.json({
+  url,
+  title,
+  metaDescription,
+  h1,
+  aiReport: aiText
+});
+
+} catch (e) {
+ console.error(e);
+ res.status(500).json({ error: "Audit failed" });
+}
+});
 
     res.json({
       url,
