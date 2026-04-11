@@ -46,6 +46,27 @@ app.post("/audit", async (req, res) => {
 
     // AI Prompt
     const prompt = `
+
+const result = await model.generateContent(prompt);
+
+const aiText = result.response.text();
+
+
+
+res.json({
+
+  url,
+
+  title,
+
+  metaDescription,
+
+  h1,
+
+  aiReport: aiText
+
+});
+
 Website: ${url}
 Title: ${title}
 Meta: ${metaDescription || "missing"}
