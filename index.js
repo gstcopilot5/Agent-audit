@@ -108,3 +108,8 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log("Server running");
 });
+} catch (e) {
+ console.error(e);
+ res.status(500).json({ error: "Audit failed" });
+ }
+});
