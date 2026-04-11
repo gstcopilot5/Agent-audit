@@ -448,13 +448,6 @@ fastify.get('/plans', async (request, reply) => {
       msg.textContent = '';
       document.getElementById('key-reveal').className = 'key-reveal';
 
-      if (!email || !email.includes('@')) {
-        msg.className = 'msg error';
-        msg.textContent = 'Please enter the email address associated with your account.';
-        document.getElementById('email-input').focus();
-        return;
-      }
-
       const upgradeBtn = document.getElementById('upgrade-pro-btn');
       upgradeBtn.disabled = true;
       upgradeBtn.textContent = 'Setting up...';
