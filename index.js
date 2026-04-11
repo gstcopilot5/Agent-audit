@@ -43,10 +43,8 @@ app.post("/audit", async (req, res) => {
 
     // PageSpeed
     const ps = await axios.get(
-      `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${url}`
     );
 
-    const performance =
       ps.data.lighthouseResult.categories.performance.score * 100;
 
     // AI Prompt
@@ -55,7 +53,7 @@ Website: ${url}
 Title: ${title}
 Meta: ${metaDescription || "missing"}
 H1: ${h1 || "missing"}
-Performance Score: ${performance}
+Performance Score: N/A
 
 Give:
 1. SEO issues
