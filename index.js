@@ -3,23 +3,73 @@ const app = express();
 
 app.use(express.json());
 
+const axios = require("axios");
+const cheerio = require("cheerio");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
 app.get("/", (req, res) => {
   res.json({ status: "working" });
 });
 
-app.post("/audit", (req, res) => {
+app.post("/audit", async (req, res) => {
   const { url } = req.body;
 
-  res.json({
-    url,
-    score: 78,
-    issues: [
-      "Missing meta tags",
-      "Slow loading speed",
-      "No alt text on images"
-    ]
-  });
+  if (!url) {
+    return res.status(400).json({ error: "URL required" });
+  }
+
+  try {
+    // Fetch HTML
+    const response = await axios.get(url);
+    const html = response.data;
+    const $ = cheerio.load(html);
+
+    const title = $("title").text();
+    const metaDescription = $('meta[name="description"]').attr("content");
+    const h1 = $("h1").first().text();
+
+    // PageSpeed
+    const ps = await axios.get(
+      `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${url}`
+    );
+
+    const performance =
+      ps.data.lighthouseResult.categories.performance.score * 100;
+
+    // AI Prompt
+    const prompt = `
+Website: ${url}
+Title: ${title}
+Meta: ${metaDescription || "missing"}
+H1: ${h1 || "missing"}
+Performance Score: ${performance}
+
+Give:
+1. SEO issues
+2. UX problems
+3. Conversion improvements
+4. Exact fixes (copy-paste ready)
+`;
+
+    const result = await model.generateContent(prompt);
+    const aiText = result.response.text();
+
+    res.json({
+      url,
+      performance,
+      ai_report: aiText,
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Audit failed" });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0");
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("Server running");
+});
