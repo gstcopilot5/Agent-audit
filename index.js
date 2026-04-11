@@ -5,8 +5,8 @@ const Razorpay = require('razorpay')
 const ADMIN_KEY = process.env.API_KEY || 'dev-key-change-me'
 
 const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
+  key_id: (process.env.RAZORPAY_KEY_ID || '').trim(),
+  key_secret: (process.env.RAZORPAY_KEY_SECRET || '').trim(),
 })
 
 const PLANS = {
@@ -24,15 +24,12 @@ const authorizations = []
 // Pending orders: razorpay_order_id -> { api_key, target_plan }
 const pendingOrders = new Map()
 
-const PUBLIC_ROUTES = ['/', '/dashboard', '/apikey', '/plans', '/payment/webhook']
+const PUBLIC_ROUTES = ['/', '/dashboard', '/apikey', '/plans', '/payment/create', '/payment/verify', '/payment/webhook', '/health']
 
 // Global auth hook
 fastify.addHook('onRequest', async (request, reply) => {
   const url = request.url.split('?')[0]
   if (PUBLIC_ROUTES.includes(url)) return
-
-  // Payment create route is also public (needs api_key in body, not header)
-  if (url === '/payment/create') return
 
   const key = request.headers['x-api-key']
   if (!key) {
@@ -532,8 +529,10 @@ fastify.post('/payment/create', async (request, reply) => {
       plan_label: targetPlan.label,
     })
   } catch (err) {
-    fastify.log.error(err)
-    return reply.status(502).send({ error: 'Bad Gateway', message: 'Failed to create Razorpay order' })
+    const rzpError = err?.error || err
+    fastify.log.error({ razorpay_error: rzpError }, 'Razorpay order creation failed')
+    const detail = rzpError?.description || rzpError?.message || 'Failed to create Razorpay order'
+    return reply.status(502).send({ error: 'Bad Gateway', message: detail })
   }
 })
 
