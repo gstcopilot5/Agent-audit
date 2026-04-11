@@ -63,11 +63,6 @@ Give:
 3. Conversion improvements
 
 4. Exact fixes (copy-paste ready)`;
-4. Exact fixes (copy-paste ready)``
-
-const result = await model.generateContent(prompt);
-
-const aiText = result.response.text();
 
 res.json({
   url,
