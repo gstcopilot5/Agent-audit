@@ -1,76 +1,42 @@
 const express = require("express");
 const axios = require("axios");
 const cheerio = require("cheerio");
-const https = require("https");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const app = express();
 app.use(express.json());
 
-const axiosInstance = axios.create({
-  httpsAgent: new https.Agent({
-      rejectUnauthorized: false
-        })
-        });
+app.get("/", (req, res) => {
+  res.json({ status: "working" });
+  });
 
-        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  app.post("/audit", async (req, res) => {
+    const { url } = req.body;
 
-        app.get("/", (req, res) => {
-          res.json({ status: "working" });
-          });
+      if (!url) {
+          return res.status(400).json({ error: "URL required" });
+            }
 
-          app.post("/audit", async (req, res) => {
-            const apiKey = req.headers["x-api-key"];
+              try {
+                  const response = await axios.get(url);
+                      const html = response.data;
+                          const $ = cheerio.load(html);
 
-              if (apiKey !== process.env.PRIVATE_API_KEY) {
-                  return res.status(401).json({ error: "Unauthorized" });
-                    }
+                              const title = $("title").text();
+                                  const metaDescription = $("meta[name='description']").attr("content");
+                                      const h1 = $("h1").first().text();
 
-                      const { url } = req.body;
+                                          res.json({
+                                                url,
+                                                      title,
+                                                            metaDescription,
+                                                                  h1
+                                                                      });
 
-                        if (!url) {
-                            return res.status(400).json({ error: "URL required" });
-                              }
+                                                                        } catch (e) {
+                                                                            res.status(500).json({ error: "Failed" });
+                                                                              }
+                                                                              });
 
-                                try {
-                                    const response = await axiosInstance.get(url);
-                                        const html = response.data;
-                                            const $ = cheerio.load(html);
-
-                                                const title = $("title").text();
-                                                    const metaDescription = $("meta[name='description']").attr("content");
-                                                        const h1 = $("h1").first().text();
-
-                                                            const prompt = `Website: ${url}
-                                                            Title: ${title}
-                                                            Meta: ${metaDescription || "missing"}
-                                                            H1: ${h1 || "missing"}
-
-                                                            Give:
-                                                            1. SEO issues
-                                                            2. UX problems
-                                                            3. Conversion improvements
-                                                            4. Exact fixes (copy-paste ready)`;
-
-                                                                const result = await model.generateContent(prompt);
-                                                                    const aiText = result.response.text();
-
-                                                                        res.json({
-                                                                              url,
-                                                                                    title,
-                                                                                          metaDescription,
-                                                                                                h1,
-                                                                                                      aiReport: aiText
-                                                                                                          });
-
-                                                                                                            } catch (e) {
-                                                                                                                console.error(e);
-                                                                                                                    res.status(500).json({ error: "Audit failed" });
-                                                                                                                      }
-                                                                                                                      });
-
-                                                                                                                      const PORT = process.env.PORT || 3000;
-                                                                                                                      app.listen(PORT, () => {
-                                                                                                                        console.log("Server running on port " + PORT);
-                                                                                                                        });
+                                                                              app.listen(3000, () => {
+                                                                                console.log("Server running on port 3000");
+                                                                                });
