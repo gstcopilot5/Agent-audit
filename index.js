@@ -21,8 +21,24 @@ const apiKeys = new Map()
 const logs = []
 const authorizations = []
 
-// Pending orders: razorpay_order_id -> { api_key, target_plan }
+// Pending orders: razorpay_order_id -> { email, target_plan }
 const pendingOrders = new Map()
+
+// Helper: find the first API key record whose user matches an email
+function findKeyByEmail(email) {
+  for (const [key, record] of apiKeys) {
+    if (record.user === email) return { key, record }
+  }
+  return null
+}
+
+// Helper: upgrade a key record to the target plan
+function upgradeKey(key, record, targetPlan, orderId) {
+  record.plan = targetPlan
+  record.paid_order_id = orderId
+  record.upgraded_at = new Date().toISOString()
+  fastify.log.info({ key, email: record.user, plan: targetPlan, order_id: orderId }, 'Plan upgraded')
+}
 
 const PUBLIC_ROUTES = ['/', '/dashboard', '/apikey', '/plans', '/payment/create', '/payment/verify', '/payment/webhook', '/health']
 
@@ -345,9 +361,9 @@ fastify.get('/plans', async (request, reply) => {
   </div>
 
   <div class="upgrade-form">
-    <h2>Upgrade Your Key</h2>
-    <label for="apikey-input">Your API Key</label>
-    <input id="apikey-input" type="text" placeholder="aa_..." />
+    <h2>Upgrade Your Plan</h2>
+    <label for="email-input">Your account email</label>
+    <input id="email-input" type="email" placeholder="you@example.com" />
     <div class="msg" id="msg"></div>
   </div>
 
@@ -357,15 +373,15 @@ fastify.get('/plans', async (request, reply) => {
     const RZP_KEY = '${rzpKeyId}';
 
     async function startUpgrade(plan) {
-      const apiKey = document.getElementById('apikey-input').value.trim();
+      const email = document.getElementById('email-input').value.trim();
       const msg = document.getElementById('msg');
       msg.className = 'msg';
       msg.textContent = '';
 
-      if (!apiKey) {
+      if (!email || !email.includes('@')) {
         msg.className = 'msg error';
-        msg.textContent = 'Please enter your API key first.';
-        document.getElementById('apikey-input').focus();
+        msg.textContent = 'Please enter the email address associated with your API key.';
+        document.getElementById('email-input').focus();
         return;
       }
 
@@ -377,7 +393,7 @@ fastify.get('/plans', async (request, reply) => {
         const res = await fetch('/payment/create', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ api_key: apiKey, plan }),
+          body: JSON.stringify({ email, plan }),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -408,7 +424,7 @@ fastify.get('/plans', async (request, reply) => {
             const verifyData = await verifyRes.json();
             if (verifyRes.ok) {
               msg.className = 'msg success';
-              msg.textContent = '✓ Payment verified! Your key has been upgraded to Pro.';
+              msg.textContent = \`✓ Payment verified! \${email} has been upgraded to Pro (10,000 requests/month).\`;
               btn.textContent = 'Upgraded!';
             } else {
               msg.className = 'msg error';
@@ -417,7 +433,7 @@ fastify.get('/plans', async (request, reply) => {
               btn.textContent = 'Upgrade to Pro';
             }
           },
-          prefill: {},
+          prefill: { email },
           theme: { color: '#1d4ed8' },
           modal: {
             ondismiss: function() {
@@ -482,18 +498,19 @@ fastify.get('/apikeys', async (request, reply) => {
   return result
 })
 
-// Create a Razorpay order for plan upgrade
+// Create a Razorpay order for plan upgrade (identified by user email)
 fastify.post('/payment/create', async (request, reply) => {
-  const { api_key, plan } = request.body ?? {}
+  const { email, plan } = request.body ?? {}
 
-  if (!api_key || !plan) {
-    return reply.status(400).send({ error: 'Bad Request', message: '"api_key" and "plan" are required' })
+  if (!email || !plan) {
+    return reply.status(400).send({ error: 'Bad Request', message: '"email" and "plan" are required' })
   }
 
-  const record = apiKeys.get(api_key)
-  if (!record) {
-    return reply.status(404).send({ error: 'Not Found', message: 'API key not found' })
+  const found = findKeyByEmail(email)
+  if (!found) {
+    return reply.status(404).send({ error: 'Not Found', message: `No API key found for email "${email}"` })
   }
+  const { key: api_key, record } = found
 
   const targetPlan = PLANS[plan]
   if (!targetPlan) {
@@ -505,21 +522,21 @@ fastify.post('/payment/create', async (request, reply) => {
   }
 
   if (record.plan === plan) {
-    return reply.status(400).send({ error: 'Bad Request', message: `Already on the ${targetPlan.label} plan` })
+    return reply.status(400).send({ error: 'Bad Request', message: `"${email}" is already on the ${targetPlan.label} plan` })
   }
 
   try {
     const order = await razorpay.orders.create({
       amount: targetPlan.amount_inr,
       currency: 'INR',
-      receipt: `upgrade_${api_key.slice(0, 16)}_${Date.now()}`,
+      receipt: `upgrade_${email.split('@')[0].slice(0, 12)}_${Date.now()}`,
       notes: {
-        api_key,
+        email,
         target_plan: plan,
       },
     })
 
-    pendingOrders.set(order.id, { api_key, target_plan: plan })
+    pendingOrders.set(order.id, { email, target_plan: plan })
 
     return reply.status(201).send({
       razorpay_order_id: order.id,
@@ -527,6 +544,7 @@ fastify.post('/payment/create', async (request, reply) => {
       currency: order.currency,
       plan,
       plan_label: targetPlan.label,
+      email,
     })
   } catch (err) {
     const rzpError = err?.error || err
@@ -544,7 +562,7 @@ fastify.post('/payment/verify', async (request, reply) => {
     return reply.status(400).send({ error: 'Bad Request', message: 'Missing payment fields' })
   }
 
-  const expectedSig = createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+  const expectedSig = createHmac('sha256', (process.env.RAZORPAY_KEY_SECRET || '').trim())
     .update(`${razorpay_order_id}|${razorpay_payment_id}`)
     .digest('hex')
 
@@ -557,19 +575,20 @@ fastify.post('/payment/verify', async (request, reply) => {
     return reply.status(404).send({ error: 'Not Found', message: 'Order not found or already processed' })
   }
 
-  const record = apiKeys.get(pending.api_key)
-  if (!record) {
-    return reply.status(404).send({ error: 'Not Found', message: 'API key no longer exists' })
+  const found = findKeyByEmail(pending.email)
+  if (!found) {
+    return reply.status(404).send({ error: 'Not Found', message: `No API key found for email "${pending.email}"` })
   }
+  const { key, record } = found
 
-  record.plan = pending.target_plan
-  record.paid_order_id = razorpay_order_id
+  upgradeKey(key, record, pending.target_plan, razorpay_order_id)
   pendingOrders.delete(razorpay_order_id)
 
   return {
     success: true,
     message: `Plan upgraded to ${PLANS[pending.target_plan].label}`,
-    api_key: pending.api_key,
+    email: pending.email,
+    api_key: key,
     plan: pending.target_plan,
     new_limit: PLANS[pending.target_plan].limit,
   }
@@ -591,15 +610,18 @@ fastify.post('/payment/webhook', {
 
   const event = request.body
   if (event?.event === 'payment.captured') {
-    const notes = event?.payload?.payment?.entity?.notes ?? {}
-    const { api_key, target_plan } = notes
+    const entity = event?.payload?.payment?.entity ?? {}
+    const notes = entity.notes ?? {}
+    const { email, target_plan } = notes
+    const orderId = entity.order_id || null
 
-    if (api_key && target_plan && PLANS[target_plan]) {
-      const record = apiKeys.get(api_key)
-      if (record && record.plan !== target_plan) {
-        record.plan = target_plan
-        record.paid_order_id = event?.payload?.payment?.entity?.order_id || null
-        fastify.log.info(`Webhook: upgraded ${api_key} to ${target_plan}`)
+    if (email && target_plan && PLANS[target_plan]) {
+      const found = findKeyByEmail(email)
+      if (found && found.record.plan !== target_plan) {
+        upgradeKey(found.key, found.record, target_plan, orderId)
+        fastify.log.info({ email, plan: target_plan, order_id: orderId }, 'Webhook: plan upgraded via payment.captured')
+      } else if (!found) {
+        fastify.log.warn({ email }, 'Webhook: no API key found for email')
       }
     }
   }
