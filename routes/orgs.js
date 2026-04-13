@@ -14,6 +14,19 @@ router.post('/', async (req, res) => {
     return res.status(500).json({ error: 'Failed to create organization' });
   }
 });
+
+// GET /org/me
+router.get('/me', requireApiKey, async (req, res) => {
+  return res.json({
+    org: {
+      id: req.org.id,
+      name: req.org.name,
+      plan: req.org.plan || 'free',
+      createdAt: req.org.created_at,
+    }
+  });
+});
+
 module.exports = router;
 
 // GET /org/me
