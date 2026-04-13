@@ -9,6 +9,7 @@ app.use('/authorize',require('./routes/authorize'));
 app.use('/execute',require('./routes/execute'));
 app.use('/audit',require('./routes/audit'));
 app.use('/incidents',require('./routes/incidents'));
+app.use('/analytics', require('./routes/analytics'));
 app.use('/risk',require('./routes/risk'));
 app.get('/health',(req,res)=>res.json({status:'ok',service:'AgentAudit',version:'2.0.0',uptime:Math.floor(process.uptime())}));
 app.use((req,res)=>res.status(404).json({error:'Route '+req.method+' '+req.path+' not found'}));
