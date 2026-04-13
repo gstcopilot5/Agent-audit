@@ -1,7 +1,13 @@
+const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
+
+function hashKey(key) {
+  return crypto.createHash('sha256').update(key).digest('hex');
+}
+
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
-async function createOrg(id,name,apiKey){const{data,error}=await supabase.from('orgs').insert({id,name,api_key:apiKey}).select().single();if(error)throw error;return data;}
-async function getOrgByApiKey(apiKey){const{data}=await supabase.from('orgs').select('*').eq('api_key',apiKey).single();return data||null;}
+async function createOrg(id,name,apiKey){const{data,error}=await supabase.from('orgs').insert({id,name,api_key:hashKey(apiKey),raw_key_preview:apiKey.slice(0,12)+'...'}).select().single();if(error)throw error;return data;}
+async function getOrgByApiKey(apiKey){const{data}=await supabase.from('orgs').select('*').eq('api_key',hashKey(apiKey)).single();return data||null;}
 async function createAgent(agent){const{data,error}=await supabase.from('agents').insert(agent).select().single();if(error)throw error;return data;}
 async function getAgent(id){const{data}=await supabase.from('agents').select('*').eq('id',id).single();return data||null;}
 async function getAgentsByOrg(orgId){const{data}=await supabase.from('agents').select('*').eq('org_id',orgId).order('created_at',{ascending:false});return data||[];}
