@@ -26,3 +26,4 @@ async function getRecentExecutionsByAgent(agentId,limit=20){const{data}=await su
 async function insertIncident(incident){const{data,error}=await supabase.from('incidents').insert(incident).select().single();if(error)throw error;return data;}
 async function getIncidentsByOrg(orgId){const{data}=await supabase.from('incidents').select('*').eq('org_id',orgId).order('detected_at',{ascending:false});return data||[];}
 module.exports={createOrg,getOrgByApiKey,createAgent,getAgent,getAgentsByOrg,updateAgentStatus,upsertPolicy,getPolicy,getPoliciesByOrg,createAuthorization,getAuthorization,markAuthorizationUsed,insertExecution,updateExecutionAnalysis,getExecutionsByAgent,getExecutionsByOrg,getRecentExecutionsByAgent,insertIncident,getIncidentsByOrg};
+module.exports.supabase = supabase;
