@@ -15,7 +15,7 @@ async function markAuthorizationUsed(id,usedAt){const{error}=await supabase.from
 async function insertExecution(exec){const{data,error}=await supabase.from('executions').insert(exec).select().single();if(error)throw error;return data;}
 async function updateExecutionAnalysis(id,aiAnalysis){await supabase.from('executions').update({ai_analysis:aiAnalysis}).eq('id',id);}
 async function getExecutionsByAgent(agentId){const{data}=await supabase.from('executions').select('*').eq('agent_id',agentId).order('executed_at',{ascending:false});return data||[];}
-async function getExecutionsByOrg(orgId){const{data}=await supabase.from('executions').select('*').eq('org_id',orgId).order('executed_at',{ascending:false}).limit(200);return data||[];}
+async function getExecutionsByOrg(orgId, limit=50, offset=0){const{data}=await supabase.from('executions').select('*').eq('org_id',orgId).order('executed_at',{ascending:false}).range(offset, offset + limit - 1);return data||[];}
 async function getRecentExecutionsByAgent(agentId,limit=20){const{data}=await supabase.from('executions').select('*').eq('agent_id',agentId).order('executed_at',{ascending:false}).limit(limit);return data||[];}
 async function insertIncident(incident){const{data,error}=await supabase.from('incidents').insert(incident).select().single();if(error)throw error;return data;}
 async function getIncidentsByOrg(orgId){const{data}=await supabase.from('incidents').select('*').eq('org_id',orgId).order('detected_at',{ascending:false});return data||[];}
