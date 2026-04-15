@@ -14,6 +14,20 @@ const supabase = createClient(
 // POST /auth/signup
 router.post('/signup', async (req, res) => {
   const { email, password, orgName } = req.body;
+
+  // Input validation
+  if (!email || !password || !orgName)
+    return res.status(400).json({ error: 'Email, password and org name are required' });
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email))
+    return res.status(400).json({ error: 'Invalid email format' });
+  if (password.length < 8)
+    return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  if (orgName.length < 2 || orgName.length > 50)
+    return res.status(400).json({ error: 'Org name must be 2-50 characters' });
+  const sanitizedOrgName = orgName.replace(/[<>\'";&]/g, '').trim();
+  if (!sanitizedOrgName)
+    return res.status(400).json({ error: 'Invalid org name' });
   if (!email || !password || !orgName)
     return res.status(400).json({ error: 'email, password, orgName required' });
 
