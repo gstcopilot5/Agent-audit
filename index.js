@@ -14,6 +14,8 @@ app.use('/analytics', require('./routes/analytics'));
 app.use('/risk',require('./routes/risk'));
 app.get('/health',(req,res)=>res.json({status:'ok',service:'AgentAudit',version:'2.0.0',uptime:Math.floor(process.uptime())}));
 const authRoutes = require('./routes/auth.js');
+const paymentRoutes = require('./routes/payments.js');
+app.use('/payments', paymentRoutes);
 app.use('/auth', authRoutes);
 
 app.use((req,res)=>res.status(404).json({error:'Route '+req.method+' '+req.path+' not found'}));
