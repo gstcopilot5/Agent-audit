@@ -1,5 +1,7 @@
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND_API_KEY);
 const crypto = require('crypto');
 
 const router = express.Router();
@@ -36,6 +38,26 @@ router.post('/signup', async (req, res) => {
       .select().single();
 
     if (orgErr) return res.status(500).json({ error: orgErr.message });
+
+    // Send welcome email
+    try {
+      await resend.emails.send({
+        from: 'AgentAudit <hello@agentpassport.in>',
+        to: email,
+        subject: 'Your AgentAudit API Key',
+        html: `<div style='font-family:sans-serif;max-width:600px;margin:0 auto'>
+          <p>Hi, your account for <strong>${orgName}</strong> is ready.</p>
+          <p>Your API Key:</p>
+          <div style='background:#0d1426;color:#22d3ee;padding:16px;border-radius:8px;font-family:monospace;font-size:14px'>${rawKey}</div>
+          <p style='color:#ef4444'><strong>Save this key — it will not be shown again.</strong></p>
+          <p>Use it in all API calls:<br><code>x-api-key: ${rawKey}</code></p>
+          <p>API Base URL: <a href='https://api.agentpassport.in'>https://api.agentpassport.in</a></p>
+          <p>Docs: <a href='https://agentpassport.in'>agentpassport.in</a></p>
+          <hr>
+          <p style='color:#666;font-size:12px'>AgentAudit — Trust & Accountability for AI Agents</p>
+        </div>`
+      });
+    } catch(emailErr) { console.error('Email error:', emailErr); }
 
     res.json({ message: 'Account created', apiKey: rawKey, orgId: org.id });
   } catch (e) {
