@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express=require('express');
 const app=express();
+app.use(require('cors')({origin: '*'}));
 app.use(express.json());
 app.use('/org',require('./routes/orgs'));
 app.use('/agents',require('./routes/agents'));
