@@ -60,3 +60,61 @@ router.post('/verify', async (req, res) => {
 });
 
 module.exports = router;
+
+// POST /payments/webhook - Razorpay webhook for payment confirmation
+router.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
+  try {
+    const signature = req.headers['x-razorpay-signature'];
+    const expectedSig = crypto.createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
+      .update(req.body).digest('hex');
+
+    if (expectedSig !== signature) {
+      return res.status(400).json({ error: 'Invalid signature' });
+    }
+
+    const event = JSON.parse(req.body);
+
+    if (event.event === 'payment.captured') {
+      const payment = event.payload.payment.entity;
+      const userId = payment.notes?.userId;
+
+      if (userId) {
+        // Upgrade plan
+        await supabase.from('orgs').update({ plan: 'growth' }).eq('user_id', userId);
+
+        // Get user email
+        const { data: org } = await supabase.from('orgs').select('*').eq('user_id', userId).single();
+        const { data: { user } } = await supabase.auth.admin.getUserById(userId);
+
+        // Send confirmation email
+        const { Resend } = require('resend');
+        const resend = new Resend(process.env.RESEND_API_KEY);
+        await resend.emails.send({
+          from: 'AgentAudit <hello@agentpassport.in>',
+          to: user.email,
+          subject: '🚀 Welcome to AgentAudit Growth Plan!',
+          html: `
+            <h2>Payment Confirmed!</h2>
+            <p>Hi there,</p>
+            <p>Your upgrade to the <strong>Growth Plan</strong> is confirmed.</p>
+            <p><strong>What you now have:</strong></p>
+            <ul>
+              <li>25 agents</li>
+              <li>50,000 executions/month</li>
+              <li>Full AI analysis (Gemini)</li>
+              <li>Priority support</li>
+            </ul>
+            <p><a href="https://agentpassport.in/dashboard">Go to Dashboard →</a></p>
+            <p>Amount paid: ₹${payment.amount / 100}</p>
+            <p>Payment ID: ${payment.id}</p>
+          `
+        });
+      }
+    }
+
+    res.json({ received: true });
+  } catch(e) {
+    console.error('Webhook error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
