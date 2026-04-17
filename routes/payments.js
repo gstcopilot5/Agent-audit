@@ -29,7 +29,7 @@ router.post('/create-order', async (req, res) => {
     res.json({ orderId: order.id, amount: order.amount, currency: order.currency,
       keyId: process.env.RAZORPAY_KEY_ID });
   } catch(e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: e.message, description: e.error?.description, statusCode: e.statusCode });
   }
 });
 
@@ -55,7 +55,7 @@ router.post('/verify', async (req, res) => {
 
     res.json({ success: true, plan: 'growth' });
   } catch(e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: e.message, description: e.error?.description, statusCode: e.statusCode });
   }
 });
 
@@ -115,6 +115,6 @@ router.post('/webhook', express.raw({type: 'application/json'}), async (req, res
     res.json({ received: true });
   } catch(e) {
     console.error('Webhook error:', e);
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: e.message, description: e.error?.description, statusCode: e.statusCode });
   }
 });
